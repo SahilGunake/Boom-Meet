@@ -71,8 +71,29 @@ export default function Room() {
     const iceServers = [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
+      // Free TURN servers from Open Relay (metered.ca)
+      {
+        urls: 'turn:a.relay.metered.ca:80',
+        username: 'e7d47c48a58be4e1b1e902a4',
+        credential: 'VsM5fBCmF9HEigzH',
+      },
+      {
+        urls: 'turn:a.relay.metered.ca:80?transport=tcp',
+        username: 'e7d47c48a58be4e1b1e902a4',
+        credential: 'VsM5fBCmF9HEigzH',
+      },
+      {
+        urls: 'turn:a.relay.metered.ca:443',
+        username: 'e7d47c48a58be4e1b1e902a4',
+        credential: 'VsM5fBCmF9HEigzH',
+      },
+      {
+        urls: 'turns:a.relay.metered.ca:443?transport=tcp',
+        username: 'e7d47c48a58be4e1b1e902a4',
+        credential: 'VsM5fBCmF9HEigzH',
+      },
     ];
-    // If a TURN server is configured, add it
+    // If a custom TURN server is configured via env, add it too
     if (import.meta.env.VITE_TURN_URL) {
       iceServers.push({
         urls: import.meta.env.VITE_TURN_URL,
@@ -106,57 +127,67 @@ export default function Room() {
 
         const peer = new Peer(undefined, {
           host: window.location.hostname,
-          port: Number(window.location.port) || 443,
+          port: Number(window.location.port) || (window.location.protocol === 'https:' ? 443 : 80),
           path: '/peerjs',
           secure: window.location.protocol === 'https:',
           config: { iceServers },
+          debug: 1,
         });
         peerRef.current = peer;
 
-        // Answer incoming calls
-        peer.on('call', (call) => {
-          call.answer(stream);
+        // PeerJS error handling
+        peer.on('error', (err) => {
+          console.error('[PeerJS] Error:', err.type, err);
+        });
+        peer.on('disconnected', () => {
+          console.warn('[PeerJS] Disconnected from signaling server, reconnecting…');
+          if (!peer.destroyed) peer.reconnect();
+        });
+
+        // Helper: connect a call's stream/close/error events
+        const handleCall = (call, peerIdKey, name) => {
           call.on('stream', (remoteStream) => {
             setPeers((prev) => ({
               ...prev,
-              [call.peer]: {
-                stream: remoteStream,
-                userName: call.metadata?.userName || 'Participant',
-              },
+              [peerIdKey]: { stream: remoteStream, userName: name },
             }));
           });
           call.on('close', () => {
             setPeers((prev) => {
               const updated = { ...prev };
-              delete updated[call.peer];
+              delete updated[peerIdKey];
               return updated;
             });
           });
+          call.on('error', (err) => {
+            console.error('[PeerJS] Call error:', err);
+          });
+        };
+
+        // Answer incoming calls — register listeners BEFORE answering
+        peer.on('call', (call) => {
+          handleCall(call, call.peer, call.metadata?.userName || 'Participant');
+          call.answer(stream);
         });
 
-        // When a new user connects, call them
+        // When a new user connects, call them (with retry)
         socket.on('user-connected', (peerId, userName) => {
-          // Small delay to ensure the remote peer is ready
-          setTimeout(() => {
+          const attemptCall = (attempt = 1) => {
             const call = peer.call(peerId, stream, {
               metadata: { userName: user?.name },
             });
-            if (!call) return;
-            call.on('stream', (remoteStream) => {
-              setPeers((prev) => ({
-                ...prev,
-                [peerId]: { stream: remoteStream, userName },
-              }));
-            });
-            call.on('close', () => {
-              setPeers((prev) => {
-                const updated = { ...prev };
-                delete updated[peerId];
-                return updated;
-              });
-            });
+            if (!call) {
+              if (attempt < 3) {
+                console.warn(`[PeerJS] peer.call returned null, retry ${attempt}/3…`);
+                setTimeout(() => attemptCall(attempt + 1), 2000);
+              }
+              return;
+            }
+            handleCall(call, peerId, userName);
             peersRef.current[peerId] = call;
-          }, 1000);
+          };
+          // Delay to let the remote peer fully register on PeerJS server
+          setTimeout(() => attemptCall(), 1500);
         });
 
         // User disconnected

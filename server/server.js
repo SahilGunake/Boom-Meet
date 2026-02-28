@@ -24,9 +24,11 @@ const server = http.createServer(app);
 // ---------- PeerJS Server ----------
 const peerServer = ExpressPeerServer(server, {
   debug: true,
-  path: '/',
+  path: '/peerjs/',
+  proxied: true,
+  allow_discovery: true,
 });
-app.use('/peerjs', peerServer);
+app.use(peerServer);
 
 // ---------- Socket.IO ----------
 const allowedOrigins = process.env.CLIENT_URL
