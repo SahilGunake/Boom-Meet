@@ -65,8 +65,7 @@ export default function Room() {
   }, [navigate]);
 
   useEffect(() => {
-    const socket = io({ withCredentials: true });
-    socketRef.current = socket;
+    let cancelled = false;
 
     // ICE servers for NAT traversal (STUN + TURN)
     const iceServers = [
@@ -82,21 +81,8 @@ export default function Room() {
       });
     }
 
-    const peer = new Peer(undefined, {
-      host: window.location.hostname,
-      port: Number(window.location.port) || 443,
-      path: '/peerjs',
-      secure: window.location.protocol === 'https:',
-      config: { iceServers },
-    });
-    peerRef.current = peer;
-
-    // Peer open — join room for chat immediately (before media is ready)
-    peer.on('open', (id) => {
-      socket.emit('join-room', roomId, id, user?.name);
-    });
-
-    // Get user media
+    // Get user media FIRST, then set up socket + peer so all listeners
+    // are registered before join-room is emitted (prevents race condition).
     navigator.mediaDevices
       .getUserMedia({
         video: true,
@@ -107,9 +93,25 @@ export default function Room() {
         },
       })
       .then((stream) => {
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
         myStreamRef.current = stream;
         setMyStream(stream);
-        streamReady = true;
+
+        const socket = io({ withCredentials: true });
+        socketRef.current = socket;
+
+        const peer = new Peer(undefined, {
+          host: window.location.hostname,
+          port: Number(window.location.port) || 443,
+          path: '/peerjs',
+          secure: window.location.protocol === 'https:',
+          config: { iceServers },
+        });
+        peerRef.current = peer;
 
         // Answer incoming calls
         peer.on('call', (call) => {
@@ -139,6 +141,7 @@ export default function Room() {
             const call = peer.call(peerId, stream, {
               metadata: { userName: user?.name },
             });
+            if (!call) return;
             call.on('stream', (remoteStream) => {
               setPeers((prev) => ({
                 ...prev,
@@ -155,43 +158,49 @@ export default function Room() {
             peersRef.current[peerId] = call;
           }, 1000);
         });
+
+        // User disconnected
+        socket.on('user-disconnected', (peerId) => {
+          if (peersRef.current[peerId]) {
+            peersRef.current[peerId].close();
+            delete peersRef.current[peerId];
+          }
+          setPeers((prev) => {
+            const updated = { ...prev };
+            delete updated[peerId];
+            return updated;
+          });
+        });
+
+        // Chat messages — sanitize with DOMPurify
+        socket.on('createMessage', (message, userName) => {
+          setMessages((prev) => [
+            ...prev,
+            {
+              text: DOMPurify.sanitize(message),
+              userName: DOMPurify.sanitize(userName),
+              time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            },
+          ]);
+        });
+
+        // Peer open — join room only AFTER all listeners are registered
+        peer.on('open', (id) => {
+          socket.emit('join-room', roomId, id, user?.name);
+        });
       })
       .catch((err) => {
         console.error('Failed to get user media:', err);
       });
 
-    // User disconnected
-    socket.on('user-disconnected', (peerId) => {
-      if (peersRef.current[peerId]) {
-        peersRef.current[peerId].close();
-        delete peersRef.current[peerId];
-      }
-      setPeers((prev) => {
-        const updated = { ...prev };
-        delete updated[peerId];
-        return updated;
-      });
-    });
-
-    // Chat messages — FIXED: sanitize with DOMPurify
-    socket.on('createMessage', (message, userName) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          text: DOMPurify.sanitize(message),
-          userName: DOMPurify.sanitize(userName),
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]);
-    });
-
     // Cleanup on unmount
     return () => {
+      cancelled = true;
       if (myStreamRef.current) {
         myStreamRef.current.getTracks().forEach((t) => t.stop());
       }
-      socket.disconnect();
-      peer.destroy();
+      if (socketRef.current) socketRef.current.disconnect();
+      if (peerRef.current) peerRef.current.destroy();
     };
   }, [roomId, user?.name]);
 
