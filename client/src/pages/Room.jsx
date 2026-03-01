@@ -89,12 +89,75 @@ export default function Room() {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
+  const [audioDevices, setAudioDevices] = useState([]);
+  const [activeAudioDeviceId, setActiveAudioDeviceId] = useState('');
 
   const socketRef = useRef(null);
   const peerRef = useRef(null);
   const myStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const peersRef = useRef({});
+  const audioEnabledRef = useRef(true);
+
+  // Enumerate audio input devices and keep the list fresh
+  const refreshAudioDevices = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter((d) => d.kind === 'audioinput');
+      setAudioDevices(inputs);
+    } catch (err) {
+      console.warn('[Room] Could not enumerate audio devices:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshAudioDevices();
+    navigator.mediaDevices.addEventListener('devicechange', refreshAudioDevices);
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', refreshAudioDevices);
+    };
+  }, [refreshAudioDevices]);
+
+  // Switch microphone to a specific device
+  const switchAudioDevice = useCallback(async (deviceId) => {
+    try {
+      const newAudio = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          deviceId: { exact: deviceId },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      const newTrack = newAudio.getAudioTracks()[0];
+      if (!newTrack) return;
+
+      // Preserve mute state
+      newTrack.enabled = audioEnabledRef.current;
+
+      const currentStream = myStreamRef.current;
+      if (currentStream) {
+        const oldTrack = currentStream.getAudioTracks()[0];
+        if (oldTrack) {
+          currentStream.removeTrack(oldTrack);
+          oldTrack.stop();
+        }
+        currentStream.addTrack(newTrack);
+      }
+
+      // Replace audio track on every peer connection
+      Object.values(peersRef.current).forEach((call) => {
+        const sender = call.peerConnection
+          ?.getSenders()
+          ?.find((s) => s.track?.kind === 'audio');
+        if (sender) sender.replaceTrack(newTrack);
+      });
+
+      setActiveAudioDeviceId(deviceId);
+    } catch (err) {
+      console.warn('[Room] Failed to switch audio device:', err);
+    }
+  }, []);
 
   // Check if the meeting requires a password
   useEffect(() => {
@@ -148,6 +211,7 @@ export default function Room() {
       const audioTrack = myStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
+        audioEnabledRef.current = audioTrack.enabled;
         setAudioEnabled(audioTrack.enabled);
       }
     }
@@ -270,6 +334,15 @@ export default function Room() {
       myStreamRef.current = stream;
       setMyStream(stream);
 
+      // Track the active audio device ID
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        const settings = audioTrack.getSettings();
+        if (settings.deviceId) setActiveAudioDeviceId(settings.deviceId);
+      }
+      // Refresh device list after getUserMedia (labels become available)
+      refreshAudioDevices();
+
         const socket = io({ withCredentials: true });
         socketRef.current = socket;
 
@@ -316,6 +389,8 @@ export default function Room() {
         peer.on('call', (call) => {
           handleCall(call, call.peer, call.metadata?.userName || 'Participant');
           call.answer(stream);
+          // Store incoming calls so replaceTrack (screen share) works both ways
+          peersRef.current[call.peer] = call;
         });
 
         // When a new user connects, call them (with retry)
@@ -371,9 +446,53 @@ export default function Room() {
 
     init();
 
+    // When the user plugs in / unplugs a headset the default mic changes.
+    // Re-acquire the audio track from the new device and hot-swap it on
+    // every active peer connection so remote participants hear the right mic.
+    const handleDeviceChange = async () => {
+      if (cancelled) return;
+      try {
+        const newAudio = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        const newTrack = newAudio.getAudioTracks()[0];
+        if (!newTrack) return;
+
+        // Preserve current mute state
+        newTrack.enabled = audioEnabledRef.current;
+
+        const currentStream = myStreamRef.current;
+        if (currentStream) {
+          // Swap on the local MediaStream so toggleAudio keeps working
+          const oldTrack = currentStream.getAudioTracks()[0];
+          if (oldTrack) {
+            currentStream.removeTrack(oldTrack);
+            oldTrack.stop();
+          }
+          currentStream.addTrack(newTrack);
+        }
+
+        // Replace audio track on every peer connection
+        Object.values(peersRef.current).forEach((call) => {
+          const sender = call.peerConnection
+            ?.getSenders()
+            ?.find((s) => s.track?.kind === 'audio');
+          if (sender) sender.replaceTrack(newTrack);
+        });
+      } catch (err) {
+        console.warn('[Room] Could not re-acquire audio on device change:', err);
+      }
+    };
+    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+
     // Cleanup on unmount
     return () => {
       cancelled = true;
+      navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((t) => t.stop());
       }
@@ -506,6 +625,9 @@ export default function Room() {
           onToggleVideo={toggleVideo}
           onToggleScreenShare={toggleScreenShare}
           onLeave={leaveMeeting}
+          audioDevices={audioDevices}
+          activeAudioDeviceId={activeAudioDeviceId}
+          onSwitchAudioDevice={switchAudioDevice}
         />
       </div>
 
