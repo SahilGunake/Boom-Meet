@@ -4,6 +4,7 @@ import { io } from 'socket.io-client';
 import Peer from 'peerjs';
 import DOMPurify from 'dompurify';
 import { useAuth } from '../hooks/useAuth';
+import api from '../api/axios';
 import VideoPlayer from '../components/VideoPlayer';
 import ChatPanel from '../components/ChatPanel';
 import MeetingControls from '../components/MeetingControls';
@@ -14,16 +15,65 @@ export default function Room() {
   const navigate = useNavigate();
   const { user } = useAuth();
 
+  // Password gate state
+  const [accessGranted, setAccessGranted] = useState(false);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [meetingInfo, setMeetingInfo] = useState(null);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [checkingAccess, setCheckingAccess] = useState(true);
+
   const [myStream, setMyStream] = useState(null);
   const [peers, setPeers] = useState({}); // { peerId: { stream, userName } }
   const [messages, setMessages] = useState([]);
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
+  const [screenSharing, setScreenSharing] = useState(false);
 
   const socketRef = useRef(null);
   const peerRef = useRef(null);
   const myStreamRef = useRef(null);
+  const screenStreamRef = useRef(null);
   const peersRef = useRef({});
+
+  // Check if the meeting requires a password
+  useEffect(() => {
+    let cancelled = false;
+    const checkAccess = async () => {
+      try {
+        const res = await api.get(`/meetings/${roomId}/info`);
+        if (cancelled) return;
+        setMeetingInfo(res.data);
+        if (res.data.hasPassword) {
+          setNeedsPassword(true);
+        } else {
+          setAccessGranted(true);
+        }
+      } catch {
+        // No meeting doc or error → allow access (ad-hoc room)
+        if (!cancelled) setAccessGranted(true);
+      } finally {
+        if (!cancelled) setCheckingAccess(false);
+      }
+    };
+    checkAccess();
+    return () => { cancelled = true; };
+  }, [roomId]);
+
+  const handlePasswordSubmit = async (e) => {
+    e.preventDefault();
+    setPasswordError('');
+    try {
+      const res = await api.post(`/meetings/${roomId}/verify-password`, { password: passwordInput });
+      if (res.data.allowed) {
+        setAccessGranted(true);
+        setNeedsPassword(false);
+      }
+    } catch (err) {
+      const msg = err.response?.data?.errors?.[0]?.msg || 'Incorrect password';
+      setPasswordError(msg);
+    }
+  };
 
   // Send a chat message
   const sendMessage = useCallback((text) => {
@@ -54,8 +104,67 @@ export default function Room() {
     }
   }, []);
 
+  // Toggle screen sharing
+  const toggleScreenShare = useCallback(async () => {
+    if (screenSharing) {
+      // Stop screen share — revert to camera
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((t) => t.stop());
+        screenStreamRef.current = null;
+      }
+      const camStream = myStreamRef.current;
+      if (camStream) {
+        const videoTrack = camStream.getVideoTracks()[0];
+        // Replace video track on all active peer connections
+        Object.values(peersRef.current).forEach((call) => {
+          const sender = call.peerConnection
+            ?.getSenders()
+            ?.find((s) => s.track?.kind === 'video');
+          if (sender && videoTrack) sender.replaceTrack(videoTrack);
+        });
+      }
+      setScreenSharing(false);
+      return;
+    }
+
+    try {
+      const screen = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      screenStreamRef.current = screen;
+      const screenTrack = screen.getVideoTracks()[0];
+
+      // Replace video track on all active peer connections
+      Object.values(peersRef.current).forEach((call) => {
+        const sender = call.peerConnection
+          ?.getSenders()
+          ?.find((s) => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(screenTrack);
+      });
+
+      setScreenSharing(true);
+
+      // When user stops sharing via browser UI
+      screenTrack.onended = () => {
+        const camStream = myStreamRef.current;
+        const camTrack = camStream?.getVideoTracks()[0];
+        Object.values(peersRef.current).forEach((call) => {
+          const sender = call.peerConnection
+            ?.getSenders()
+            ?.find((s) => s.track?.kind === 'video');
+          if (sender && camTrack) sender.replaceTrack(camTrack);
+        });
+        screenStreamRef.current = null;
+        setScreenSharing(false);
+      };
+    } catch (err) {
+      console.warn('Screen share cancelled or failed:', err);
+    }
+  }, [screenSharing]);
+
   // Leave meeting
   const leaveMeeting = useCallback(() => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((t) => t.stop());
+    }
     if (myStreamRef.current) {
       myStreamRef.current.getTracks().forEach((t) => t.stop());
     }
@@ -65,62 +174,41 @@ export default function Room() {
   }, [navigate]);
 
   useEffect(() => {
+    if (!accessGranted) return;
     let cancelled = false;
 
-    // ICE servers for NAT traversal (STUN + TURN)
-    const iceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      // Free TURN servers from Open Relay (metered.ca)
-      {
-        urls: 'turn:a.relay.metered.ca:80',
-        username: 'e7d47c48a58be4e1b1e902a4',
-        credential: 'VsM5fBCmF9HEigzH',
-      },
-      {
-        urls: 'turn:a.relay.metered.ca:80?transport=tcp',
-        username: 'e7d47c48a58be4e1b1e902a4',
-        credential: 'VsM5fBCmF9HEigzH',
-      },
-      {
-        urls: 'turn:a.relay.metered.ca:443',
-        username: 'e7d47c48a58be4e1b1e902a4',
-        credential: 'VsM5fBCmF9HEigzH',
-      },
-      {
-        urls: 'turns:a.relay.metered.ca:443?transport=tcp',
-        username: 'e7d47c48a58be4e1b1e902a4',
-        credential: 'VsM5fBCmF9HEigzH',
-      },
-    ];
-    // If a custom TURN server is configured via env, add it too
-    if (import.meta.env.VITE_TURN_URL) {
-      iceServers.push({
-        urls: import.meta.env.VITE_TURN_URL,
-        username: import.meta.env.VITE_TURN_USERNAME || '',
-        credential: import.meta.env.VITE_TURN_CREDENTIAL || '',
-      });
-    }
+    // Fetch ICE servers from backend (TURN creds stay server-side)
+    const init = async () => {
+      let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+      try {
+        const res = await api.get('/meetings/ice-servers');
+        if (res.data.success) iceServers = res.data.iceServers;
+      } catch (err) {
+        console.warn('Could not fetch ICE servers, using STUN only:', err);
+      }
 
-    // Get user media FIRST, then set up socket + peer so all listeners
-    // are registered before join-room is emitted (prevents race condition).
-    navigator.mediaDevices
-      .getUserMedia({
-        video: true,
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      })
-      .then((stream) => {
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch (err) {
+        console.error('Failed to get user media:', err);
+        return;
+      }
 
-        myStreamRef.current = stream;
-        setMyStream(stream);
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      myStreamRef.current = stream;
+      setMyStream(stream);
 
         const socket = io({ withCredentials: true });
         socketRef.current = socket;
@@ -219,21 +307,79 @@ export default function Room() {
         peer.on('open', (id) => {
           socket.emit('join-room', roomId, id, user?.name);
         });
-      })
-      .catch((err) => {
-        console.error('Failed to get user media:', err);
-      });
+    };
+
+    init();
 
     // Cleanup on unmount
     return () => {
       cancelled = true;
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
       if (myStreamRef.current) {
         myStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       if (socketRef.current) socketRef.current.disconnect();
       if (peerRef.current) peerRef.current.destroy();
     };
-  }, [roomId, user?.name]);
+  }, [roomId, user?.name, accessGranted]);
+
+  // --- Password gate UI ---
+  if (checkingAccess) {
+    return (
+      <div className="d-flex justify-content-center align-items-center vh-100 bg-dark text-white">
+        <div className="spinner-border text-primary" role="status">
+          <span className="visually-hidden">Checking access...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (needsPassword && !accessGranted) {
+    return (
+      <div className="d-flex justify-content-center align-items-center vh-100" style={{ background: '#1a1a2e' }}>
+        <div className="card shadow" style={{ width: '100%', maxWidth: 400 }}>
+          <div className="card-body p-4">
+            <h4 className="card-title text-center mb-3">
+              <i className="fas fa-lock me-2"></i>Meeting Password Required
+            </h4>
+            {meetingInfo?.title && (
+              <p className="text-muted text-center mb-3">{meetingInfo.title}</p>
+            )}
+            {passwordError && (
+              <div className="alert alert-danger py-2">{passwordError}</div>
+            )}
+            <form onSubmit={handlePasswordSubmit}>
+              <div className="mb-3">
+                <input
+                  type="password"
+                  className="form-control"
+                  placeholder="Enter meeting password"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="d-flex gap-2">
+                <button type="submit" className="btn btn-primary flex-grow-1">
+                  Join Meeting
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary"
+                  onClick={() => navigate('/dashboard')}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="room-container">
@@ -262,10 +408,11 @@ export default function Room() {
         <MeetingControls
           audioEnabled={audioEnabled}
           videoEnabled={videoEnabled}
+          screenSharing={screenSharing}
           onToggleAudio={toggleAudio}
           onToggleVideo={toggleVideo}
+          onToggleScreenShare={toggleScreenShare}
           onLeave={leaveMeeting}
-          roomId={roomId}
         />
       </div>
 

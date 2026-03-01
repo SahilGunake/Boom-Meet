@@ -1,10 +1,11 @@
 export default function MeetingControls({
   audioEnabled,
   videoEnabled,
+  screenSharing,
   onToggleAudio,
   onToggleVideo,
+  onToggleScreenShare,
   onLeave,
-  roomId,
 }) {
   const copyRoomLink = () => {
     const link = window.location.href;
@@ -29,6 +30,14 @@ export default function MeetingControls({
         title={videoEnabled ? 'Stop Video' : 'Start Video'}
       >
         <i className={`fas ${videoEnabled ? 'fa-video' : 'fa-video-slash'}`}></i>
+      </button>
+
+      <button
+        className={`control-btn ${screenSharing ? 'control-btn-active' : ''}`}
+        onClick={onToggleScreenShare}
+        title={screenSharing ? 'Stop Sharing' : 'Share Screen'}
+      >
+        <i className={`fas ${screenSharing ? 'fa-stop' : 'fa-desktop'}`}></i>
       </button>
 
       <button

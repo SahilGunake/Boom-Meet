@@ -46,7 +46,19 @@ const io = new Server(server, {
 // ---------- Security ----------
 app.use(
   helmet({
-    contentSecurityPolicy: false, // relaxed so the SPA can load scripts/styles
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://cdnjs.cloudflare.com', 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://cdnjs.cloudflare.com', 'https://fonts.gstatic.com'],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https://img.icons8.com'],
+        connectSrc: ["'self'", 'wss:', 'ws:', 'https://stun.l.google.com', 'https://stun1.l.google.com', 'turn:a.relay.metered.ca:*', 'turns:a.relay.metered.ca:*'],
+        mediaSrc: ["'self'", 'blob:'],
+        workerSrc: ["'self'", 'blob:'],
+        frameSrc: ["'none'"],
+      },
+    },
   })
 );
 app.use(
@@ -66,7 +78,10 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // ---------- Session ----------
+const FirestoreSessionStore = require('./config/FirestoreSessionStore');
+
 const sessionMiddleware = session({
+  store: new FirestoreSessionStore({ ttl: 24 * 60 * 60 * 1000 }),
   secret: process.env.SESSION_SECRET || 'changeme',
   resave: false,
   saveUninitialized: false,

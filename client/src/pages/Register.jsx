@@ -68,6 +68,7 @@ export default function Register() {
                 value={form.name}
                 onChange={handleChange}
                 required
+                maxLength={100}
               />
             </div>
 
@@ -82,6 +83,7 @@ export default function Register() {
                 value={form.email}
                 onChange={handleChange}
                 required
+                maxLength={254}
               />
             </div>
 
@@ -92,11 +94,12 @@ export default function Register() {
                 className="form-control"
                 id="password"
                 name="password"
-                placeholder="Min 6 characters"
+                placeholder="6–128 characters"
                 value={form.password}
                 onChange={handleChange}
                 required
                 minLength={6}
+                maxLength={128}
               />
             </div>
 
@@ -112,6 +115,7 @@ export default function Register() {
                 onChange={handleChange}
                 required
                 minLength={6}
+                maxLength={128}
               />
             </div>
 

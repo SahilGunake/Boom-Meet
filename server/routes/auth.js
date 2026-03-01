@@ -8,6 +8,13 @@ const sendEmail = require('../utils/sendEmail');
 const { ensureAuthenticated } = require('../middleware/ensureAuth');
 const { authLimiter } = require('../middleware/rateLimiter');
 
+// --- Validation helpers ---
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_NAME = 100;
+const MAX_EMAIL = 254;
+const MAX_PASSWORD = 128;
+const MIN_PASSWORD = 6;
+
 // @route   POST /api/auth/register
 // @desc    Register a new user
 router.post('/register', authLimiter, async (req, res) => {
@@ -18,12 +25,28 @@ router.post('/register', authLimiter, async (req, res) => {
     errors.push({ msg: 'Please enter all fields' });
   }
 
+  if (name && name.length > MAX_NAME) {
+    errors.push({ msg: `Name must be at most ${MAX_NAME} characters` });
+  }
+
+  if (email && email.length > MAX_EMAIL) {
+    errors.push({ msg: `Email must be at most ${MAX_EMAIL} characters` });
+  }
+
+  if (email && !EMAIL_RE.test(email)) {
+    errors.push({ msg: 'Please enter a valid email address' });
+  }
+
   if (password !== password2) {
     errors.push({ msg: 'Passwords do not match' });
   }
 
-  if (password && password.length < 6) {
-    errors.push({ msg: 'Password must be at least 6 characters' });
+  if (password && password.length < MIN_PASSWORD) {
+    errors.push({ msg: `Password must be at least ${MIN_PASSWORD} characters` });
+  }
+
+  if (password && password.length > MAX_PASSWORD) {
+    errors.push({ msg: `Password must be at most ${MAX_PASSWORD} characters` });
   }
 
   if (errors.length > 0) {
@@ -106,6 +129,10 @@ router.post('/forgot-password', authLimiter, async (req, res) => {
     return res.status(400).json({ success: false, errors: [{ msg: 'Please provide your email' }] });
   }
 
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ success: false, errors: [{ msg: 'Please enter a valid email address' }] });
+  }
+
   try {
     const user = await User.findByEmail(email);
 
@@ -156,8 +183,12 @@ router.post('/reset-password', authLimiter, async (req, res) => {
     errors.push({ msg: 'Passwords do not match' });
   }
 
-  if (password && password.length < 6) {
-    errors.push({ msg: 'Password must be at least 6 characters' });
+  if (password && password.length < MIN_PASSWORD) {
+    errors.push({ msg: `Password must be at least ${MIN_PASSWORD} characters` });
+  }
+
+  if (password && password.length > MAX_PASSWORD) {
+    errors.push({ msg: `Password must be at most ${MAX_PASSWORD} characters` });
   }
 
   if (errors.length > 0) {

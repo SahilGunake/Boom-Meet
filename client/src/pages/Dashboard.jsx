@@ -7,15 +7,26 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [joinCode, setJoinCode] = useState('');
+  const [showNewMeeting, setShowNewMeeting] = useState(false);
+  const [meetingTitle, setMeetingTitle] = useState('');
+  const [meetingPassword, setMeetingPassword] = useState('');
+  const [creating, setCreating] = useState(false);
 
-  const handleNewMeeting = async () => {
+  const handleNewMeeting = async (e) => {
+    if (e) e.preventDefault();
+    setCreating(true);
     try {
-      const res = await api.get('/meetings/new');
+      const res = await api.post('/meetings/new', {
+        title: meetingTitle.trim() || undefined,
+        password: meetingPassword.trim() || undefined,
+      });
       if (res.data.success) {
         navigate(`/room/${res.data.roomId}`);
       }
     } catch (err) {
       console.error('Failed to create meeting:', err);
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -58,13 +69,63 @@ export default function Dashboard() {
                 <p className="text-muted mb-4">
                   Start a new meeting or join an existing one.
                 </p>
-                <button
-                  className="btn btn-primary btn-lg px-5"
-                  onClick={handleNewMeeting}
-                >
-                  <i className="fas fa-plus me-2"></i>
-                  New Meeting
-                </button>
+
+                {!showNewMeeting ? (
+                  <button
+                    className="btn btn-primary btn-lg px-5"
+                    onClick={() => setShowNewMeeting(true)}
+                  >
+                    <i className="fas fa-plus me-2"></i>
+                    New Meeting
+                  </button>
+                ) : (
+                  <form onSubmit={handleNewMeeting} className="text-start">
+                    <div className="mb-3">
+                      <label htmlFor="meetingTitle" className="form-label">
+                        Meeting Title <span className="text-muted">(optional)</span>
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        id="meetingTitle"
+                        placeholder="e.g. Team Standup"
+                        value={meetingTitle}
+                        onChange={(e) => setMeetingTitle(e.target.value)}
+                        maxLength={100}
+                      />
+                    </div>
+                    <div className="mb-3">
+                      <label htmlFor="meetingPassword" className="form-label">
+                        Meeting Password <span className="text-muted">(optional)</span>
+                      </label>
+                      <input
+                        type="password"
+                        className="form-control"
+                        id="meetingPassword"
+                        placeholder="Leave blank for no password"
+                        value={meetingPassword}
+                        onChange={(e) => setMeetingPassword(e.target.value)}
+                        maxLength={64}
+                      />
+                    </div>
+                    <div className="d-flex gap-2">
+                      <button
+                        type="submit"
+                        className="btn btn-primary flex-grow-1"
+                        disabled={creating}
+                      >
+                        {creating ? 'Creating...' : 'Create & Join'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline-secondary"
+                        onClick={() => setShowNewMeeting(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             </div>
 

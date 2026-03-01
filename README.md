@@ -57,10 +57,15 @@ FIREBASE_CLIENT_ID=123456789
 SESSION_SECRET=<random-64-char-hex>
 PORT=5000
 NODE_ENV=development
-CLIENT_URL=http://localhost:5173
+CLIENT_URL=http://localhost:5175
+
+# TURN server credentials
+TURN_SERVER_URL=a.relay.metered.ca
+TURN_USERNAME=your-turn-username
+TURN_CREDENTIAL=your-turn-credential
 ```
 
-To get these values, go to **Firebase Console → Project Settings → Service Accounts → Generate new private key**, and copy the corresponding fields from the downloaded JSON.
+To get Firebase values, go to **Firebase Console → Project Settings → Service Accounts → Generate new private key**, and copy the corresponding fields from the downloaded JSON.
 
 ### 3. Run development servers
 
@@ -69,7 +74,7 @@ npm run dev
 ```
 
 This starts both servers concurrently:
-- **Frontend** → http://localhost:5173 (Vite dev server)
+- **Frontend** → http://localhost:5175 (Vite dev server)
 - **Backend**  → http://localhost:5000 (Express API)
 
 Vite proxies `/api`, `/socket.io`, and `/peerjs` requests to the backend automatically.
@@ -78,9 +83,12 @@ Vite proxies `/api`, `/socket.io`, and `/peerjs` requests to the backend automat
 
 - User registration & login (Passport.js local strategy)
 - Create instant meetings with unique room IDs
-- Join meetings via room code
+- Join meetings via room code or invite link
 - Real-time video & audio (WebRTC via PeerJS)
+- Screen sharing with track replacement
 - Audio mute/unmute & video on/off toggles
+- Password-protected meetings
 - In-meeting text chat (Socket.IO) with XSS protection
+- Persistent sessions backed by Firestore
 - Responsive layout (desktop + mobile)
-- Security: Helmet headers, rate limiting, bcrypt password hashing, session-based auth
+- Security: Helmet CSP, rate limiting, bcrypt, CORS, server-side TURN credentials
