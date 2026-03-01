@@ -89,6 +89,8 @@ export default function Room() {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('connecting');
+  // 'connecting' | 'connected' | 'error:...' | 'reconnecting'
 
   const socketRef = useRef(null);
   const peerRef = useRef(null);
@@ -277,40 +279,50 @@ export default function Room() {
       const socket = io({ withCredentials: true });
       socketRef.current = socket;
 
-      // --- Socket.IO connection lifecycle ---
-      socket.on('connect', () => {
-        console.log('[Socket.IO] Connected, id =', socket.id);
-        // If peer is already open, join now
-        if (peerRef.current?.id && !socket._joinedRoom) {
-          socket._joinedRoom = true;
-          socket.emit('join-room', roomId, peerRef.current.id, userNameRef.current);
-          console.log('[Socket.IO] Emitting join-room (socket ready first)');
-        }
-      });
-      socket.on('connect_error', (err) => {
-        console.error('[Socket.IO] Connection error:', err.message);
-      });
-      socket.on('disconnect', (reason) => {
-        console.warn('[Socket.IO] Disconnected:', reason);
-        socket._joinedRoom = false;
-      });
-
       const peer = new Peer(undefined, {
         host: window.location.hostname,
         port: Number(window.location.port) || (window.location.protocol === 'https:' ? 443 : 80),
         path: '/peerjs',
         secure: window.location.protocol === 'https:',
         config: { iceServers },
-        debug: 1,
+        debug: 2,
       });
       peerRef.current = peer;
+
+      // Helper: check if both connections are ready
+      const checkConnected = () => {
+        if (socket.connected && peer.open) {
+          setConnectionStatus('connected');
+        }
+      };
+
+      // --- Socket.IO lifecycle ---
+      socket.on('connect', () => {
+        console.log('[Socket.IO] Connected, id =', socket.id);
+        checkConnected();
+        // On reconnect, re-join room (server-side socket is fresh)
+        if (peer.id) {
+          console.log('[Socket.IO] (Re)joining room on connect');
+          socket.emit('join-room', roomId, peer.id, userNameRef.current);
+        }
+      });
+      socket.on('connect_error', (err) => {
+        console.error('[Socket.IO] Connection error:', err.message);
+        setConnectionStatus('error: socket ' + err.message);
+      });
+      socket.on('disconnect', (reason) => {
+        console.warn('[Socket.IO] Disconnected:', reason);
+        setConnectionStatus('reconnecting');
+      });
 
       // PeerJS error handling
       peer.on('error', (err) => {
         console.error('[PeerJS] Error:', err.type, err);
+        setConnectionStatus('error: peer ' + err.type);
       });
       peer.on('disconnected', () => {
         console.warn('[PeerJS] Disconnected from signaling server, reconnecting…');
+        setConnectionStatus('reconnecting');
         if (!peer.destroyed) peer.reconnect();
       });
 
@@ -391,15 +403,14 @@ export default function Room() {
         ]);
       });
 
-      // Peer open — join room only AFTER both socket connected and peer open
+      // Peer open — join room
+      // Socket.IO client buffers emits when disconnected and flushes on connect,
+      // so this works regardless of whether the socket is ready yet.
       peer.on('open', (id) => {
         console.log('[PeerJS] Open, id =', id);
-        if (socket.connected && !socket._joinedRoom) {
-          socket._joinedRoom = true;
-          socket.emit('join-room', roomId, id, userNameRef.current);
-          console.log('[Socket.IO] Emitting join-room (peer ready first)');
-        }
-        // If socket isn't connected yet, the socket 'connect' handler above will emit join-room
+        checkConnected();
+        socket.emit('join-room', roomId, id, userNameRef.current);
+        console.log('[Socket.IO] Emitted join-room (buffered if socket not ready)');
       });
     };
 
@@ -487,6 +498,15 @@ export default function Room() {
         {/* Meeting header bar */}
         <div className="room-header">
           <div className="room-header-left">
+
+        {/* Connection status overlay */}
+        {connectionStatus !== 'connected' && (
+          <div className={`connection-status-bar status-${connectionStatus.startsWith('error') ? 'error' : connectionStatus}`}>
+            {connectionStatus === 'connecting' && <><i className="fas fa-spinner fa-spin me-2"></i>Connecting...</>}
+            {connectionStatus === 'reconnecting' && <><i className="fas fa-spinner fa-spin me-2"></i>Reconnecting...</>}
+            {connectionStatus.startsWith('error') && <><i className="fas fa-exclamation-triangle me-2"></i>{connectionStatus}</>}
+          </div>
+        )}
             <i className="fas fa-video me-2"></i>
             <span className="room-title">{meetingTitle || 'Boom Meet'}</span>
           </div>
