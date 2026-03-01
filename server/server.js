@@ -24,11 +24,9 @@ const server = http.createServer(app);
 // ---------- PeerJS Server ----------
 const peerServer = ExpressPeerServer(server, {
   debug: true,
-  path: '/peerjs/',
-  proxied: true,
-  allow_discovery: true,
+  path: '/',
 });
-app.use(peerServer);
+app.use('/peerjs', peerServer);
 
 // ---------- Socket.IO ----------
 const allowedOrigins = process.env.CLIENT_URL
@@ -46,19 +44,7 @@ const io = new Server(server, {
 // ---------- Security ----------
 app.use(
   helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'", 'https://cdnjs.cloudflare.com', 'https://fonts.googleapis.com'],
-        fontSrc: ["'self'", 'https://cdnjs.cloudflare.com', 'https://fonts.gstatic.com'],
-        imgSrc: ["'self'", 'data:', 'blob:', 'https://img.icons8.com'],
-        connectSrc: ["'self'", 'wss:', 'ws:', 'https://stun.l.google.com', 'https://stun1.l.google.com', 'turn:a.relay.metered.ca:*', 'turns:a.relay.metered.ca:*'],
-        mediaSrc: ["'self'", 'blob:'],
-        workerSrc: ["'self'", 'blob:'],
-        frameSrc: ["'none'"],
-      },
-    },
+    contentSecurityPolicy: false, // relaxed so the SPA can load scripts/styles
   })
 );
 app.use(
@@ -78,10 +64,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // ---------- Session ----------
-const FirestoreSessionStore = require('./config/FirestoreSessionStore');
-
 const sessionMiddleware = session({
-  store: new FirestoreSessionStore({ ttl: 24 * 60 * 60 * 1000 }),
   secret: process.env.SESSION_SECRET || 'changeme',
   resave: false,
   saveUninitialized: false,
@@ -114,12 +97,10 @@ if (process.env.NODE_ENV === 'production') {
 
 // ---------- Socket.IO Events ----------
 io.on('connection', (socket) => {
-  console.log(`[Socket.IO] Client connected: ${socket.id}`);
-
   socket.on('join-room', (roomId, peerId, userName) => {
     // Prevent duplicate join-room listeners
     if (socket.roomId) {
-      console.log(`[Socket.IO] ${socket.id} already in room ${socket.roomId}, ignoring duplicate join-room`);
+      // Already joined — skip re-registration
       return;
     }
 
@@ -127,22 +108,16 @@ io.on('connection', (socket) => {
     socket.userName = userName;
     socket.roomId = roomId;
 
-    const roomSockets = io.sockets.adapter.rooms.get(roomId);
-    const roomSize = roomSockets ? roomSockets.size : 0;
-    console.log(`[Socket.IO] ${userName} (${socket.id}) joined room ${roomId} | peer=${peerId} | room size=${roomSize}`);
-
     // Notify others in the room
     socket.to(roomId).emit('user-connected', peerId, userName);
 
     // Chat messages
     socket.on('message', (message) => {
-      console.log(`[Socket.IO] Message in ${socket.roomId} from ${socket.userName}: ${message.slice(0, 50)}`);
       io.to(socket.roomId).emit('createMessage', message, socket.userName);
     });
 
     // Disconnect
     socket.on('disconnect', () => {
-      console.log(`[Socket.IO] ${userName} (${socket.id}) disconnected from room ${roomId}`);
       socket.to(roomId).emit('user-disconnected', peerId);
     });
   });
