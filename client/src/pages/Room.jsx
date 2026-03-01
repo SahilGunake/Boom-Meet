@@ -95,6 +95,7 @@ export default function Room() {
   const myStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const peersRef = useRef({});
+  const userNameRef = useRef(user?.name);
 
   // Check if the meeting requires a password
   useEffect(() => {
@@ -237,6 +238,9 @@ export default function Room() {
     if (!accessGranted) return;
     let cancelled = false;
 
+    // Keep ref in sync for closures
+    userNameRef.current = user?.name;
+
     // Fetch ICE servers from backend (TURN creds stay server-side)
     const init = async () => {
       let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -270,103 +274,133 @@ export default function Room() {
       myStreamRef.current = stream;
       setMyStream(stream);
 
-        const socket = io({ withCredentials: true });
-        socketRef.current = socket;
+      const socket = io({ withCredentials: true });
+      socketRef.current = socket;
 
-        const peer = new Peer(undefined, {
-          host: window.location.hostname,
-          port: Number(window.location.port) || (window.location.protocol === 'https:' ? 443 : 80),
-          path: '/peerjs',
-          secure: window.location.protocol === 'https:',
-          config: { iceServers },
-          debug: 1,
+      // --- Socket.IO connection lifecycle ---
+      socket.on('connect', () => {
+        console.log('[Socket.IO] Connected, id =', socket.id);
+        // If peer is already open, join now
+        if (peerRef.current?.id && !socket._joinedRoom) {
+          socket._joinedRoom = true;
+          socket.emit('join-room', roomId, peerRef.current.id, userNameRef.current);
+          console.log('[Socket.IO] Emitting join-room (socket ready first)');
+        }
+      });
+      socket.on('connect_error', (err) => {
+        console.error('[Socket.IO] Connection error:', err.message);
+      });
+      socket.on('disconnect', (reason) => {
+        console.warn('[Socket.IO] Disconnected:', reason);
+        socket._joinedRoom = false;
+      });
+
+      const peer = new Peer(undefined, {
+        host: window.location.hostname,
+        port: Number(window.location.port) || (window.location.protocol === 'https:' ? 443 : 80),
+        path: '/peerjs',
+        secure: window.location.protocol === 'https:',
+        config: { iceServers },
+        debug: 1,
+      });
+      peerRef.current = peer;
+
+      // PeerJS error handling
+      peer.on('error', (err) => {
+        console.error('[PeerJS] Error:', err.type, err);
+      });
+      peer.on('disconnected', () => {
+        console.warn('[PeerJS] Disconnected from signaling server, reconnecting…');
+        if (!peer.destroyed) peer.reconnect();
+      });
+
+      // Helper: connect a call's stream/close/error events
+      const handleCall = (call, peerIdKey, name) => {
+        call.on('stream', (remoteStream) => {
+          console.log('[PeerJS] Received remote stream from', peerIdKey);
+          setPeers((prev) => ({
+            ...prev,
+            [peerIdKey]: { stream: remoteStream, userName: name },
+          }));
         });
-        peerRef.current = peer;
-
-        // PeerJS error handling
-        peer.on('error', (err) => {
-          console.error('[PeerJS] Error:', err.type, err);
-        });
-        peer.on('disconnected', () => {
-          console.warn('[PeerJS] Disconnected from signaling server, reconnecting…');
-          if (!peer.destroyed) peer.reconnect();
-        });
-
-        // Helper: connect a call's stream/close/error events
-        const handleCall = (call, peerIdKey, name) => {
-          call.on('stream', (remoteStream) => {
-            setPeers((prev) => ({
-              ...prev,
-              [peerIdKey]: { stream: remoteStream, userName: name },
-            }));
-          });
-          call.on('close', () => {
-            setPeers((prev) => {
-              const updated = { ...prev };
-              delete updated[peerIdKey];
-              return updated;
-            });
-          });
-          call.on('error', (err) => {
-            console.error('[PeerJS] Call error:', err);
-          });
-        };
-
-        // Answer incoming calls — register listeners BEFORE answering
-        peer.on('call', (call) => {
-          handleCall(call, call.peer, call.metadata?.userName || 'Participant');
-          call.answer(stream);
-        });
-
-        // When a new user connects, call them (with retry)
-        socket.on('user-connected', (peerId, userName) => {
-          const attemptCall = (attempt = 1) => {
-            const call = peer.call(peerId, stream, {
-              metadata: { userName: user?.name },
-            });
-            if (!call) {
-              if (attempt < 3) {
-                console.warn(`[PeerJS] peer.call returned null, retry ${attempt}/3…`);
-                setTimeout(() => attemptCall(attempt + 1), 2000);
-              }
-              return;
-            }
-            handleCall(call, peerId, userName);
-            peersRef.current[peerId] = call;
-          };
-          // Delay to let the remote peer fully register on PeerJS server
-          setTimeout(() => attemptCall(), 1500);
-        });
-
-        // User disconnected
-        socket.on('user-disconnected', (peerId) => {
-          if (peersRef.current[peerId]) {
-            peersRef.current[peerId].close();
-            delete peersRef.current[peerId];
-          }
+        call.on('close', () => {
+          delete peersRef.current[peerIdKey];
           setPeers((prev) => {
             const updated = { ...prev };
-            delete updated[peerId];
+            delete updated[peerIdKey];
             return updated;
           });
         });
-
-        // Chat messages — sanitize with DOMPurify
-        socket.on('createMessage', (message, userName) => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              text: DOMPurify.sanitize(message),
-              userName: DOMPurify.sanitize(userName),
-              time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            },
-          ]);
+        call.on('error', (err) => {
+          console.error('[PeerJS] Call error:', err);
         });
+      };
 
-        // Peer open — join room only AFTER all listeners are registered
-        peer.on('open', (id) => {
-          socket.emit('join-room', roomId, id, user?.name);
+      // Answer incoming calls — register listeners BEFORE answering
+      peer.on('call', (call) => {
+        console.log('[PeerJS] Incoming call from', call.peer);
+        handleCall(call, call.peer, call.metadata?.userName || 'Participant');
+        call.answer(stream);
+        peersRef.current[call.peer] = call;
+      });
+
+      // When a new user connects, call them (with retry)
+      socket.on('user-connected', (peerId, userName) => {
+        console.log('[Socket.IO] user-connected:', peerId, userName);
+        const attemptCall = (attempt = 1) => {
+          const call = peer.call(peerId, stream, {
+            metadata: { userName: userNameRef.current },
+          });
+          if (!call) {
+            if (attempt < 3) {
+              console.warn(`[PeerJS] peer.call returned null, retry ${attempt}/3…`);
+              setTimeout(() => attemptCall(attempt + 1), 2000);
+            }
+            return;
+          }
+          handleCall(call, peerId, userName);
+          peersRef.current[peerId] = call;
+        };
+        // Delay to let the remote peer fully register on PeerJS server
+        setTimeout(() => attemptCall(), 1500);
+      });
+
+      // User disconnected
+      socket.on('user-disconnected', (peerId) => {
+        console.log('[Socket.IO] user-disconnected:', peerId);
+        if (peersRef.current[peerId]) {
+          peersRef.current[peerId].close();
+          delete peersRef.current[peerId];
+        }
+        setPeers((prev) => {
+          const updated = { ...prev };
+          delete updated[peerId];
+          return updated;
         });
+      });
+
+      // Chat messages — sanitize with DOMPurify
+      socket.on('createMessage', (message, userName) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            text: DOMPurify.sanitize(message),
+            userName: DOMPurify.sanitize(userName),
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          },
+        ]);
+      });
+
+      // Peer open — join room only AFTER both socket connected and peer open
+      peer.on('open', (id) => {
+        console.log('[PeerJS] Open, id =', id);
+        if (socket.connected && !socket._joinedRoom) {
+          socket._joinedRoom = true;
+          socket.emit('join-room', roomId, id, userNameRef.current);
+          console.log('[Socket.IO] Emitting join-room (peer ready first)');
+        }
+        // If socket isn't connected yet, the socket 'connect' handler above will emit join-room
+      });
     };
 
     init();
@@ -383,7 +417,7 @@ export default function Room() {
       if (socketRef.current) socketRef.current.disconnect();
       if (peerRef.current) peerRef.current.destroy();
     };
-  }, [roomId, user?.name, accessGranted]);
+  }, [roomId, accessGranted]);
 
   // --- Password gate UI ---
   if (checkingAccess) {

@@ -114,10 +114,12 @@ if (process.env.NODE_ENV === 'production') {
 
 // ---------- Socket.IO Events ----------
 io.on('connection', (socket) => {
+  console.log(`[Socket.IO] Client connected: ${socket.id}`);
+
   socket.on('join-room', (roomId, peerId, userName) => {
     // Prevent duplicate join-room listeners
     if (socket.roomId) {
-      // Already joined — skip re-registration
+      console.log(`[Socket.IO] ${socket.id} already in room ${socket.roomId}, ignoring duplicate join-room`);
       return;
     }
 
@@ -125,16 +127,22 @@ io.on('connection', (socket) => {
     socket.userName = userName;
     socket.roomId = roomId;
 
+    const roomSockets = io.sockets.adapter.rooms.get(roomId);
+    const roomSize = roomSockets ? roomSockets.size : 0;
+    console.log(`[Socket.IO] ${userName} (${socket.id}) joined room ${roomId} | peer=${peerId} | room size=${roomSize}`);
+
     // Notify others in the room
     socket.to(roomId).emit('user-connected', peerId, userName);
 
     // Chat messages
     socket.on('message', (message) => {
+      console.log(`[Socket.IO] Message in ${socket.roomId} from ${socket.userName}: ${message.slice(0, 50)}`);
       io.to(socket.roomId).emit('createMessage', message, socket.userName);
     });
 
     // Disconnect
     socket.on('disconnect', () => {
+      console.log(`[Socket.IO] ${userName} (${socket.id}) disconnected from room ${roomId}`);
       socket.to(roomId).emit('user-disconnected', peerId);
     });
   });
