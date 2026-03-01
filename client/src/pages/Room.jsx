@@ -10,6 +10,66 @@ import ChatPanel from '../components/ChatPanel';
 import MeetingControls from '../components/MeetingControls';
 import '../styles/room.css';
 
+// ---------- PiP Camera Overlay ----------
+function PipOverlay({ stream, userName }) {
+  const videoRef = useRef(null);
+  const overlayRef = useRef(null);
+  const dragging = useRef(false);
+  const offset = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  const onPointerDown = useCallback((e) => {
+    dragging.current = true;
+    const rect = overlayRef.current.getBoundingClientRect();
+    offset.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    overlayRef.current.setPointerCapture(e.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback((e) => {
+    if (!dragging.current) return;
+    const el = overlayRef.current;
+    const parent = el.parentElement;
+    const px = parent.getBoundingClientRect();
+    let x = e.clientX - px.left - offset.current.x;
+    let y = e.clientY - px.top - offset.current.y;
+    // Clamp inside parent
+    x = Math.max(0, Math.min(x, px.width - el.offsetWidth));
+    y = Math.max(0, Math.min(y, px.height - el.offsetHeight));
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+  }, []);
+
+  const onPointerUp = useCallback(() => {
+    dragging.current = false;
+  }, []);
+
+  return (
+    <div
+      ref={overlayRef}
+      className="pip-overlay"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{ transform: 'scaleX(-1)' }}
+      />
+      <div className="pip-label">{userName}</div>
+    </div>
+  );
+}
+
 export default function Room() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -381,13 +441,41 @@ export default function Room() {
     );
   }
 
+  // Derive meeting title for the header
+  const meetingTitle = meetingInfo?.title && meetingInfo.title !== 'Untitled Meeting'
+    ? meetingInfo.title
+    : null;
+
   return (
     <div className="room-container">
       {/* Left panel — videos + controls */}
       <div className="room-main">
+        {/* Meeting header bar */}
+        <div className="room-header">
+          <div className="room-header-left">
+            <i className="fas fa-video me-2"></i>
+            <span className="room-title">{meetingTitle || 'Boom Meet'}</span>
+          </div>
+          <div className="room-header-right">
+            <span className="room-id-badge" title="Meeting ID">
+              <i className="fas fa-hashtag me-1"></i>
+              {roomId.slice(0, 8)}
+            </span>
+          </div>
+        </div>
+
         <div className="video-grid">
-          {/* My video */}
-          {myStream && (
+          {/* Screen share — show as the main large tile */}
+          {screenSharing && screenStreamRef.current && (
+            <VideoPlayer
+              stream={screenStreamRef.current}
+              muted
+              userName="Screen Share"
+              className="screen-share-tile"
+            />
+          )}
+          {/* My camera — normal tile when not sharing, hidden when sharing (shown as PiP instead) */}
+          {myStream && !screenSharing && (
             <VideoPlayer
               stream={myStream}
               muted
@@ -404,6 +492,11 @@ export default function Room() {
             />
           ))}
         </div>
+
+        {/* PiP camera overlay when screen sharing */}
+        {screenSharing && myStream && (
+          <PipOverlay stream={myStream} userName={user?.name} />
+        )}
 
         <MeetingControls
           audioEnabled={audioEnabled}

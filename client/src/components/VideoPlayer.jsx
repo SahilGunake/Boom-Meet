@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-export default function VideoPlayer({ stream, muted = false, userName, mirrored = false }) {
+export default function VideoPlayer({ stream, muted = false, userName, mirrored = false, className = '' }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
@@ -10,7 +10,7 @@ export default function VideoPlayer({ stream, muted = false, userName, mirrored 
   }, [stream]);
 
   return (
-    <div className="video-player">
+    <div className={`video-player ${className}`}>
       <video
         ref={videoRef}
         autoPlay
