@@ -471,7 +471,6 @@ export default function Room() {
               stream={screenStreamRef.current}
               muted
               userName="Screen Share"
-              className="screen-share-tile"
             />
           )}
           {/* My camera — normal tile when not sharing, hidden when sharing (shown as PiP instead) */}
